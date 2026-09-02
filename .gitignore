@@ -2,6 +2,12 @@
 bin/
 *.class
 
+# Embedded Database (auto-generated at runtime)
+database/*.db
+
+# Binary Library JARs (auto-fetched by run scripts)
+lib/*.jar
+
 # Temporary or IDE files
 .idea/
 *.iml
