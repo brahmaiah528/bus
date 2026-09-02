@@ -26,7 +26,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Embedded Localhost Web Server (Java Standard Library HttpServer).
- * Provides Web Authentication (Login / Register) and Complete Dashboard at http://localhost:8080
+ * Faithfully matches the UniBus Desktop UI mockup design at http://localhost:8080
  */
 public class WebServer {
     private final AuthService authService;
@@ -35,7 +35,6 @@ public class WebServer {
     private final BusPassService passService;
     private HttpServer server;
 
-    // Session token -> User object
     private static final Map<String, User> activeSessions = new ConcurrentHashMap<>();
 
     public WebServer(AuthService authService, PassengerService passengerService, 
@@ -93,7 +92,20 @@ public class WebServer {
             }
 
             try {
-                String html = buildDashboardHtml(user);
+                String query = exchange.getRequestURI().getQuery();
+                String msg = "";
+                String err = "";
+                if (query != null) {
+                    for (String p : query.split("&")) {
+                        String[] kv = p.split("=");
+                        if (kv.length == 2) {
+                            if ("msg".equals(kv[0])) msg = URLDecoder.decode(kv[1], StandardCharsets.UTF_8);
+                            if ("err".equals(kv[0])) err = URLDecoder.decode(kv[1], StandardCharsets.UTF_8);
+                        }
+                    }
+                }
+
+                String html = buildDashboardHtml(user, msg, err);
                 sendHtmlResponse(exchange, 200, html);
             } catch (Exception e) {
                 e.printStackTrace();
@@ -162,7 +174,7 @@ public class WebServer {
 
                 try {
                     authService.register(u, p, name, email, role, null);
-                    redirect(exchange, "/login?msg=" + urlEncode("Registration successful! Please sign in with your credentials."));
+                    redirect(exchange, "/login?msg=" + urlEncode("Registration successful! Please sign in with your new credentials."));
                 } catch (Exception ex) {
                     redirect(exchange, "/login?err=" + urlEncode(ex.getMessage()));
                 }
@@ -185,7 +197,7 @@ public class WebServer {
                 }
             }
             exchange.getResponseHeaders().add("Set-Cookie", "AUTH_TOKEN=; Path=/; Max-Age=0");
-            redirect(exchange, "/login?msg=" + urlEncode("Logged out successfully."));
+            redirect(exchange, "/login?msg=" + urlEncode("Signed out successfully."));
         }
     }
 
@@ -200,10 +212,20 @@ public class WebServer {
                     String phone = params.get("phone");
                     String email = params.get("email");
                     String type = params.get("type");
-                    int validity = Integer.parseInt(params.getOrDefault("validity", "180"));
+                    String route = params.get("route");
+                    String passType = params.get("passType");
+                    int validity = "SEMESTER".equalsIgnoreCase(passType) ? 180 : 30;
 
                     passengerService.registerPassenger(id, name, phone, email, type, validity);
-                    redirect(exchange, "/?msg=Passenger+" + id + "+registered+successfully");
+
+                    // Auto issue pass if route is selected
+                    if (route != null && !route.isEmpty()) {
+                        try {
+                            passService.issuePass(id, route, passType);
+                        } catch (Exception ignored) {}
+                    }
+
+                    redirect(exchange, "/?msg=" + urlEncode("Passenger " + name + " (" + id + ") registered and pass issued successfully!"));
                 } catch (Exception e) {
                     redirect(exchange, "/?err=" + urlEncode(e.getMessage()));
                 }
@@ -224,10 +246,10 @@ public class WebServer {
                     String dest = params.get("destination");
                     String boarding = params.get("boardingPoint");
                     double fare = Double.parseDouble(params.getOrDefault("fare", "30"));
-                    boolean avail = "1".equals(params.get("available")) || "true".equalsIgnoreCase(params.get("available"));
+                    boolean avail = "1".equals(params.get("available")) || "true".equalsIgnoreCase(params.get("available")) || "on".equalsIgnoreCase(params.get("available"));
 
                     routeService.addRoute(rNum, src, dest, boarding, fare, avail);
-                    redirect(exchange, "/?msg=Route+" + rNum + "+added+successfully");
+                    redirect(exchange, "/?msg=" + urlEncode("Bus Route " + rNum + " added to catalog successfully!"));
                 } catch (Exception e) {
                     redirect(exchange, "/?err=" + urlEncode(e.getMessage()));
                 }
@@ -248,7 +270,7 @@ public class WebServer {
                     String type = params.get("passType");
 
                     BusPass pass = passService.issuePass(pId, rNum, type);
-                    redirect(exchange, "/?msg=Pass+" + pass.getPassId() + "+issued+successfully+(Fee:+Rs.+" + pass.getFee() + ")");
+                    redirect(exchange, "/?msg=" + urlEncode("Bus Pass #" + pass.getPassId() + " generated! Calculated Fee: Rs. " + String.format("%.2f", pass.getFee())));
                 } catch (Exception e) {
                     redirect(exchange, "/?err=" + urlEncode(e.getMessage()));
                 }
@@ -268,7 +290,7 @@ public class WebServer {
                     String type = params.get("passType");
 
                     BusPass pass = passService.renewPass(passId, type);
-                    redirect(exchange, "/?msg=Pass+" + pass.getPassId() + "+renewed+until+" + pass.getExpiryDate());
+                    redirect(exchange, "/?msg=" + urlEncode("Pass #" + pass.getPassId() + " renewed until " + pass.getExpiryDate() + " (Fee: Rs. " + pass.getFee() + ")"));
                 } catch (Exception e) {
                     redirect(exchange, "/?err=" + urlEncode(e.getMessage()));
                 }
@@ -286,7 +308,7 @@ public class WebServer {
                 try {
                     String passId = params.get("passId");
                     passService.cancelPass(passId);
-                    redirect(exchange, "/?msg=Pass+" + passId + "+marked+as+CANCELLED");
+                    redirect(exchange, "/?msg=" + urlEncode("Pass #" + passId + " marked as CANCELLED."));
                 } catch (Exception e) {
                     redirect(exchange, "/?err=" + urlEncode(e.getMessage()));
                 }
@@ -334,57 +356,71 @@ public class WebServer {
 
     private String buildLoginPageHtml(String msg, String err) {
         return "<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'>" +
-               "<title>Sign In / Register - Campus Bus Pass Portal</title>" +
+               "<title>Sign In - UniBus | Pass Manager</title>" +
+               "<link href='https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap' rel='stylesheet'>" +
                "<style>" +
-               "body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); min-height: 100vh; margin: 0; display: flex; align-items: center; justify-content: center; }" +
-               ".auth-card { background: white; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.25); width: 440px; overflow: hidden; padding: 30px; }" +
-               ".logo-header { text-align: center; margin-bottom: 25px; }" +
-               ".logo-header h1 { margin: 0; font-size: 22px; color: #1e3c72; }" +
-               ".logo-header p { margin: 5px 0 0 0; color: #666; font-size: 13px; }" +
-               ".tabs { display: flex; border-bottom: 2px solid #eee; margin-bottom: 20px; }" +
-               ".tab-btn { flex: 1; text-align: center; padding: 10px; cursor: pointer; font-weight: 600; color: #777; border-bottom: 2px solid transparent; margin-bottom: -2px; }" +
-               ".tab-btn.active { color: #2a5298; border-bottom-color: #2a5298; }" +
-               ".form-group { margin-bottom: 14px; }" +
-               "label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px; color: #555; }" +
-               "input, select { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; font-size: 13px; }" +
-               "button.submit-btn { background: #2a5298; color: white; border: none; padding: 12px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: bold; width: 100%; margin-top: 10px; }" +
-               "button.submit-btn:hover { background: #1e3c72; }" +
-               ".banner { padding: 10px; border-radius: 6px; font-size: 12px; margin-bottom: 15px; }" +
-               ".banner-success { background: #e8f5e9; color: #2e7d32; border: 1px solid #c8e6c9; }" +
-               ".banner-error { background: #ffebee; color: #c62828; border: 1px solid #ffcdd2; }" +
-               ".demo-creds { margin-top: 20px; padding: 12px; background: #f8f9fa; border-radius: 6px; font-size: 11px; color: #555; line-height: 1.5; }" +
+               "* { box-sizing: border-box; font-family: 'Inter', sans-serif; }" +
+               "body { background: #0f172a; margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; }" +
+               ".login-window { background: #1e293b; border: 1px solid #334155; border-radius: 12px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5); width: 440px; overflow: hidden; }" +
+               ".window-bar { background: #0f172a; padding: 12px 16px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #334155; }" +
+               ".dot { width: 12px; height: 12px; border-radius: 50%; }" +
+               ".dot-red { background: #ef4444; } .dot-yellow { background: #f59e0b; } .dot-green { background: #10b981; }" +
+               ".window-title { margin-left: auto; margin-right: auto; font-size: 12px; color: #94a3b8; font-weight: 500; }" +
+               ".login-content { padding: 32px 28px; }" +
+               ".brand { display: flex; align-items: center; gap: 10px; margin-bottom: 24px; }" +
+               ".brand-icon { width: 36px; height: 36px; background: #0ea5e9; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: white; font-size: 18px; font-weight: bold; }" +
+               ".brand-text h2 { margin: 0; font-size: 18px; color: #f8fafc; font-weight: 700; }" +
+               ".brand-text p { margin: 2px 0 0 0; font-size: 12px; color: #94a3b8; }" +
+               ".tabs { display: flex; border-bottom: 1px solid #334155; margin-bottom: 20px; }" +
+               ".tab-btn { flex: 1; text-align: center; padding: 10px; cursor: pointer; font-size: 13px; font-weight: 600; color: #94a3b8; border-bottom: 2px solid transparent; }" +
+               ".tab-btn.active { color: #38bdf8; border-bottom-color: #38bdf8; }" +
+               ".form-group { margin-bottom: 16px; }" +
+               "label { display: block; font-size: 12px; font-weight: 500; margin-bottom: 6px; color: #cbd5e1; }" +
+               "input, select { width: 100%; padding: 10px 12px; background: #0f172a; border: 1px solid #334155; border-radius: 6px; color: #f8fafc; font-size: 13px; outline: none; transition: border 0.2s; }" +
+               "input:focus, select:focus { border-color: #38bdf8; }" +
+               "button.submit-btn { background: #0284c7; color: white; border: none; padding: 12px; border-radius: 6px; font-size: 14px; font-weight: 600; width: 100%; cursor: pointer; transition: background 0.2s; margin-top: 8px; }" +
+               "button.submit-btn:hover { background: #0369a1; }" +
+               ".banner { padding: 10px 14px; border-radius: 6px; font-size: 12px; margin-bottom: 16px; line-height: 1.4; }" +
+               ".banner-success { background: #064e3b; color: #6ee7b7; border: 1px solid #059669; }" +
+               ".banner-error { background: #7f1d1d; color: #fca5a5; border: 1px solid #dc2626; }" +
+               ".hint { margin-top: 20px; padding: 12px; background: #0f172a; border-radius: 6px; font-size: 11px; color: #94a3b8; line-height: 1.6; border: 1px solid #1e293b; }" +
                "</style></head><body>" +
-               "<div class='auth-card'>" +
-               "<div class='logo-header'>" +
-               "<h1>College Transport Portal</h1>" +
-               "<p>Bus Pass Management & Issuance System</p>" +
+               "<div class='login-window'>" +
+               "<div class='window-bar'>" +
+               "<div class='dot dot-red'></div><div class='dot dot-yellow'></div><div class='dot dot-green'></div>" +
+               "<div class='window-title'>UniBus | Desktop Sign In</div>" +
+               "</div>" +
+               "<div class='login-content'>" +
+               "<div class='brand'>" +
+               "<div class='brand-icon'>[U]</div>" +
+               "<div class='brand-text'><h2>UniBus | Pass Manager</h2><p>University Transport Portal</p></div>" +
                "</div>" +
                (msg.isEmpty() ? "" : "<div class='banner banner-success'>" + msg + "</div>") +
                (err.isEmpty() ? "" : "<div class='banner banner-error'>" + err + "</div>") +
                "<div class='tabs'>" +
                "<div class='tab-btn active' onclick='showTab(\"login\")'>Sign In</div>" +
-               "<div class='tab-btn' onclick='showTab(\"register\")'>Register</div>" +
+               "<div class='tab-btn' onclick='showTab(\"register\")'>Create Account</div>" +
                "</div>" +
                "<form id='loginForm' method='POST' action='/auth/login'>" +
-               "<div class='form-group'><label>Username:</label><input type='text' name='username' value='admin' required></div>" +
-               "<div class='form-group'><label>Password:</label><input type='password' name='password' value='admin123' required></div>" +
-               "<button type='submit' class='submit-btn'>Sign In</button>" +
+               "<div class='form-group'><label>Username</label><input type='text' name='username' value='admin' required></div>" +
+               "<div class='form-group'><label>Password</label><input type='password' name='password' value='admin123' required></div>" +
+               "<button type='submit' class='submit-btn'>Sign In to Dashboard</button>" +
                "</form>" +
                "<form id='regForm' method='POST' action='/auth/register' style='display:none;'>" +
-               "<div class='form-group'><label>Username:</label><input type='text' name='username' placeholder='e.g. rahul12' required></div>" +
-               "<div class='form-group'><label>Password:</label><input type='password' name='password' placeholder='Min 4 characters' required></div>" +
-               "<div class='form-group'><label>Full Name:</label><input type='text' name='fullName' placeholder='e.g. Rahul Sharma' required></div>" +
-               "<div class='form-group'><label>Email ID:</label><input type='email' name='email' placeholder='rahul@college.edu' required></div>" +
-               "<div class='form-group'><label>Role:</label><select name='role'><option value='STUDENT'>STUDENT (20% Subsidy)</option><option value='FACULTY'>FACULTY (10% Subsidy)</option><option value='ADMIN'>ADMIN</option></select></div>" +
-               "<button type='submit' class='submit-btn' style='background:#27ae60;'>Create Account</button>" +
+               "<div class='form-group'><label>Username</label><input type='text' name='username' placeholder='e.g. rahul101' required></div>" +
+               "<div class='form-group'><label>Password</label><input type='password' name='password' placeholder='Min 4 characters' required></div>" +
+               "<div class='form-group'><label>Full Name</label><input type='text' name='fullName' placeholder='e.g. Rahul Sharma' required></div>" +
+               "<div class='form-group'><label>Email ID</label><input type='email' name='email' placeholder='rahul@university.edu' required></div>" +
+               "<div class='form-group'><label>Role</label><select name='role'><option value='STUDENT'>STUDENT (20% Subsidy)</option><option value='FACULTY'>FACULTY (10% Subsidy)</option><option value='ADMIN'>ADMINISTRATOR</option></select></div>" +
+               "<button type='submit' class='submit-btn' style='background:#10b981;'>Register Account</button>" +
                "</form>" +
-               "<div class='demo-creds'>" +
+               "<div class='hint'>" +
                "<strong>Default Accounts:</strong><br>" +
-               "Admin: <code>admin</code> / <code>admin123</code><br>" +
-               "Student: <code>aarav</code> / <code>student123</code><br>" +
-               "Faculty: <code>ramesh</code> / <code>faculty123</code>" +
+               "• Admin: <code>admin</code> / <code>admin123</code><br>" +
+               "• Student: <code>aarav</code> / <code>student123</code><br>" +
+               "• Faculty: <code>ramesh</code> / <code>faculty123</code>" +
                "</div>" +
-               "</div>" +
+               "</div></div>" +
                "<script>" +
                "function showTab(t) {" +
                "  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));" +
@@ -402,141 +438,322 @@ public class WebServer {
                "</body></html>";
     }
 
-    private String buildDashboardHtml(User user) throws SQLException {
+    private String buildDashboardHtml(User user, String msg, String err) throws SQLException {
         List<Passenger> passengers = passengerService.getAllPassengers();
         List<BusRoute> routes = routeService.getAllRoutes();
         List<BusPass> passes = passService.getAllPasses();
         List<BusPass> expired = passService.getExpiredPasses();
         List<BusPass> expiringSoon = passService.getPassesExpiringSoon(7);
 
+        int activePassesCount = (int) passes.stream().filter(p -> "ACTIVE".equalsIgnoreCase(p.getStatus()) && !p.isExpired()).count();
+        int expiringCount = expiringSoon.size();
+
         StringBuilder html = new StringBuilder();
         html.append("<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'>");
-        html.append("<title>Dashboard - College Bus Pass System</title>");
+        html.append("<title>UniBus | Bus Pass Management System</title>");
+        html.append("<link href='https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap' rel='stylesheet'>");
         html.append("<style>");
-        html.append("body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; background: #f0f2f5; color: #333; }");
-        html.append(".header { background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); color: white; padding: 16px 40px; box-shadow: 0 2px 10px rgba(0,0,0,0.15); display: flex; justify-content: space-between; align-items: center; }");
-        html.append(".header h1 { margin: 0; font-size: 22px; } .header p { margin: 3px 0 0 0; opacity: 0.85; font-size: 12px; }");
-        html.append(".user-badge { display: flex; align-items: center; gap: 15px; font-size: 13px; }");
-        html.append(".logout-btn { background: #e74c3c; color: white; border: none; padding: 7px 14px; border-radius: 4px; font-size: 12px; font-weight: bold; cursor: pointer; text-decoration: none; }");
-        html.append(".container { max-width: 1200px; margin: 25px auto; padding: 0 20px; }");
-        html.append(".stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 25px; }");
-        html.append(".stat-card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.06); text-align: center; border-left: 4px solid #2a5298; }");
-        html.append(".stat-card h3 { margin: 0; font-size: 28px; color: #1e3c72; } .stat-card p { margin: 5px 0 0 0; font-size: 13px; color: #666; font-weight: 600; }");
-        html.append(".stat-card.alert { border-left-color: #e74c3c; } .stat-card.alert h3 { color: #e74c3c; }");
-        html.append(".grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 25px; }");
-        html.append(".card { background: white; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.06); padding: 20px; }");
-        html.append(".card h2 { margin-top: 0; font-size: 17px; border-bottom: 2px solid #f0f2f5; padding-bottom: 10px; color: #1e3c72; }");
-        html.append("table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 10px; }");
-        html.append("th, td { padding: 10px; text-align: left; border-bottom: 1px solid #eee; }");
-        html.append("th { background: #f8f9fa; color: #444; font-weight: 600; }");
-        html.append(".badge { padding: 4px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; }");
-        html.append(".badge-active { background: #e8f5e9; color: #2e7d32; }");
-        html.append(".badge-expired { background: #ffebee; color: #c62828; }");
-        html.append(".badge-cancelled { background: #efebe9; color: #4e342e; }");
-        html.append(".form-group { margin-bottom: 12px; }");
-        html.append("label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px; color: #555; }");
-        html.append("input, select { width: 100%; padding: 8px 10px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; font-size: 13px; }");
-        html.append("button { background: #2a5298; color: white; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 600; width: 100%; }");
-        html.append("button:hover { background: #1e3c72; }");
+        html.append("* { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; }");
+        html.append("body { background: #0f172a; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }");
+
+        html.append(".app-window { width: 1280px; height: 860px; background: #f8fafc; border-radius: 12px; box-shadow: 0 25px 60px rgba(0,0,0,0.45); display: flex; flex-direction: column; overflow: hidden; border: 1px solid #334155; }");
+        html.append(".window-bar { background: #ffffff; padding: 10px 16px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #e2e8f0; }");
+        html.append(".dot { width: 11px; height: 11px; border-radius: 50%; }");
+        html.append(".dot-red { background: #ff5f56; } .dot-yellow { background: #ffbd2e; } .dot-green { background: #27c93f; }");
+
+        html.append(".app-body { display: flex; flex: 1; height: calc(100% - 32px); overflow: hidden; }");
+
+        html.append(".sidebar { width: 230px; background: #192231; color: #94a3b8; display: flex; flex-direction: column; justify-content: space-between; padding: 18px 0; shrink: 0; }");
+        html.append(".brand-section { padding: 0 18px 20px 18px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid #283548; }");
+        html.append(".brand-icon { width: 34px; height: 34px; background: #0ea5e9; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: white; font-size: 14px; font-weight: bold; }");
+        html.append(".brand-text { color: #f8fafc; font-size: 13px; font-weight: 700; line-height: 1.2; }");
+
+        html.append(".nav-menu { padding: 16px 10px; display: flex; flex-direction: column; gap: 4px; }");
+        html.append(".nav-item { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 6px; font-size: 12.5px; font-weight: 500; color: #94a3b8; text-decoration: none; cursor: pointer; transition: all 0.2s; }");
+        html.append(".nav-item:hover { color: #f8fafc; background: #232f42; }");
+        html.append(".nav-item.active { background: #28384f; color: #38bdf8; font-weight: 600; }");
+
+        html.append(".sidebar-footer { padding: 0 18px; }");
+        html.append(".logout-btn { display: flex; align-items: center; gap: 8px; color: #ef4444; text-decoration: none; font-size: 12.5px; font-weight: 600; padding: 8px 0; cursor: pointer; }");
+        html.append(".logout-btn:hover { color: #f87171; }");
+
+        html.append(".main-content { flex: 1; display: flex; flex-direction: column; background: #f1f5f9; overflow-y: auto; }");
+
+        html.append(".top-header { background: #ffffff; padding: 14px 28px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #e2e8f0; }");
+        html.append(".header-title { display: flex; align-items: center; gap: 12px; }");
+        html.append(".header-logo { width: 34px; height: 34px; background: #0f172a; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: white; font-size: 13px; font-weight: bold; }");
+        html.append(".header-text h1 { font-size: 15px; color: #0f172a; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin: 0; }");
+        html.append(".header-text p { font-size: 11px; color: #64748b; font-weight: 600; margin: 2px 0 0 0; }");
+        html.append(".header-user { display: flex; align-items: center; gap: 12px; }");
+        html.append(".user-avatar { width: 34px; height: 34px; border-radius: 50%; background: #e2e8f0; border: 2px solid #0ea5e9; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: bold; color: #0f172a; }");
+        html.append(".user-info { text-align: right; }");
+        html.append(".user-name { font-size: 12.5px; font-weight: 600; color: #0f172a; }");
+        html.append(".user-role { font-size: 10px; font-weight: 700; color: #0284c7; text-transform: uppercase; }");
+        html.append(".bell-icon { font-size: 15px; color: #64748b; cursor: pointer; margin-left: 6px; font-weight: bold; }");
+
+        html.append(".dashboard-grid { padding: 18px 24px; display: grid; grid-template-columns: 1fr 1fr; gap: 18px; flex: 1; }");
+        html.append(".card { background: #ffffff; border-radius: 8px; border: 1px solid #e2e8f0; box-shadow: 0 1px 3px rgba(0,0,0,0.04); display: flex; flex-direction: column; overflow: hidden; }");
+
+        html.append(".card-header { padding: 10px 16px; background: #192231; color: white; display: flex; align-items: center; justify-content: space-between; }");
+        html.append(".card-header.teal { background: #185a66; }");
+        html.append(".card-title { font-size: 12.5px; font-weight: 700; letter-spacing: 0.4px; display: flex; align-items: center; gap: 6px; }");
+        html.append(".card-btn { background: #0f172a; color: white; border: 1px solid #334155; padding: 4px 10px; border-radius: 4px; font-size: 11px; font-weight: 600; cursor: pointer; }");
+        html.append(".card-btn:hover { background: #1e293b; }");
+
+        html.append(".card-body { padding: 14px 16px; flex: 1; display: flex; flex-direction: column; font-size: 12px; }");
+        html.append(".form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }");
+        html.append(".form-group { margin-bottom: 9px; }");
+        html.append("label { display: block; font-size: 11px; font-weight: 600; color: #475569; margin-bottom: 3px; }");
+        html.append("label .req { color: #ef4444; }");
+        html.append("input, select { width: 100%; padding: 6.5px 9px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 11.5px; color: #0f172a; background: #ffffff; outline: none; }");
+        html.append("input:focus, select:focus { border-color: #0284c7; }");
+        html.append(".btn-teal { background: #187785; color: white; border: none; padding: 8px 14px; border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }");
+        html.append(".btn-teal:hover { background: #13606c; }");
+
+        html.append(".table-wrap { overflow-x: auto; flex: 1; max-height: 250px; }");
+        html.append("table { width: 100%; border-collapse: collapse; font-size: 11.5px; }");
+        html.append("th { background: #f8fafc; color: #475569; font-weight: 600; text-align: left; padding: 7px 9px; border-bottom: 1px solid #e2e8f0; font-size: 11px; }");
+        html.append("td { padding: 7px 9px; border-bottom: 1px solid #f1f5f9; color: #1e293b; }");
+        html.append(".badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 700; text-transform: uppercase; }");
+        html.append(".badge-active { background: #dcfce7; color: #15803d; }");
+        html.append(".badge-inactive { background: #fee2e2; color: #b91c1c; }");
+
+        html.append(".monitor-strip { background: #185a66; color: white; padding: 8px 12px; border-radius: 4px; font-size: 11px; font-weight: 600; margin-bottom: 10px; display: flex; justify-content: space-between; }");
+
+        html.append(".alert-bar { margin: 12px 24px 0 24px; padding: 8px 14px; border-radius: 6px; font-size: 12px; font-weight: 500; }");
+        html.append(".alert-success { background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; }");
+        html.append(".alert-error { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }");
         html.append("</style></head><body>");
 
-        html.append("<div class='header'>");
-        html.append("<div><h1>College Bus Pass Management Portal</h1><p>Transport Administration & Digital Issuance</p></div>");
-        html.append("<div class='user-badge'>");
-        html.append("<span>👤 Logged in as: <strong>").append(user.getFullName()).append("</strong> (").append(user.getRole()).append(")</span>");
-        html.append("<a href='/auth/logout' class='logout-btn'>Sign Out</a>");
-        html.append("</div></div>");
+        html.append("<div class='app-window'>");
 
-        html.append("<div class='container'>");
-
-        // Summary Statistics
-        html.append("<div class='stats'>");
-        html.append("<div class='stat-card'><h3>").append(passengers.size()).append("</h3><p>REGISTERED PASSENGERS</p></div>");
-        html.append("<div class='stat-card'><h3>").append(routes.size()).append("</h3><p>ACTIVE BUS ROUTES</p></div>");
-        html.append("<div class='stat-card'><h3>").append(passes.size()).append("</h3><p>TOTAL BUS PASSES</p></div>");
-        html.append("<div class='stat-card alert'><h3>").append(expired.size() + expiringSoon.size()).append("</h3><p>EXPIRING / EXPIRED</p></div>");
+        html.append("<div class='window-bar'>");
+        html.append("<div class='dot dot-red'></div><div class='dot dot-yellow'></div><div class='dot dot-green'></div>");
         html.append("</div>");
 
-        // Forms Grid
-        html.append("<div class='grid-2'>");
+        html.append("<div class='app-body'>");
 
-        // Form 1: Issue Pass
+        // Sidebar
+        html.append("<div class='sidebar'>");
+        html.append("<div>");
+        html.append("<div class='brand-section'>");
+        html.append("<div class='brand-icon'>[U]</div>");
+        html.append("<div class='brand-text'>UniBus | Pass Manager</div>");
+        html.append("</div>");
+
+        html.append("<div class='nav-menu'>");
+        html.append("<a class='nav-item active'>Dashboard</a>");
+        html.append("<a class='nav-item' onclick='document.getElementById(\"studentIdInput\").focus();'>Passenger Registration</a>");
+        html.append("<a class='nav-item' onclick='document.getElementById(\"routeTable\").scrollIntoView();'>Route Catalog</a>");
+        html.append("<a class='nav-item' onclick='document.getElementById(\"calcPassengerId\").focus();'>Fee Management</a>");
+        html.append("<a class='nav-item' onclick='document.getElementById(\"validityTable\").scrollIntoView();'>Validity Monitor</a>");
+        html.append("<a class='nav-item'>Reports</a>");
+        html.append("<a class='nav-item'>Settings</a>");
+        html.append("</div></div>");
+
+        html.append("<div class='sidebar-footer'>");
+        html.append("<a href='/auth/logout' class='logout-btn'>LOGOUT</a>");
+        html.append("</div></div>");
+
+        // Right Content
+        html.append("<div class='main-content'>");
+
+        // Top Header
+        html.append("<div class='top-header'>");
+        html.append("<div class='header-title'>");
+        html.append("<div class='header-logo'>[U]</div>");
+        html.append("<div class='header-text'>");
+        html.append("<h1>UNIVERSITY OF TECH</h1>");
+        html.append("<p>BUS PASS MANAGEMENT SYSTEM</p>");
+        html.append("</div></div>");
+
+        html.append("<div class='header-user'>");
+        html.append("<div class='user-avatar'>AD</div>");
+        html.append("<div class='user-info'>");
+        html.append("<div class='user-name'>").append(user.getFullName()).append("</div>");
+        html.append("<div class='user-role'>").append(user.getRole()).append(" PANEL</div>");
+        html.append("</div>");
+        html.append("<div class='bell-icon' title='Notifications'>[!]</div>");
+        html.append("</div></div>");
+
+        if (!msg.isEmpty()) {
+            html.append("<div class='alert-bar alert-success'>[SUCCESS] ").append(msg).append("</div>");
+        }
+        if (!err.isEmpty()) {
+            html.append("<div class='alert-bar alert-error'>[ALERT] ").append(err).append("</div>");
+        }
+
+        // 2x2 Grid Content
+        html.append("<div class='dashboard-grid'>");
+
+        // CARD 1: PASSENGER REGISTRATION FORM (Top-Left)
         html.append("<div class='card'>");
-        html.append("<h2>Issue Bus Pass (Polymorphic Fee Calculation)</h2>");
-        html.append("<form method='POST' action='/api/issue-pass'>");
-        html.append("<div class='form-group'><label>Passenger ID:</label><input type='text' name='passengerId' placeholder='e.g. STU101 or FAC201' required></div>");
-        html.append("<div class='form-group'><label>Route Number:</label><select name='routeNumber'>");
+        html.append("<div class='card-header'>");
+        html.append("<div class='card-title'>PASSENGER REGISTRATION FORM</div>");
+        html.append("</div>");
+        html.append("<div class='card-body'>");
+        html.append("<form method='POST' action='/api/register-passenger'>");
+        html.append("<div class='form-row'>");
+        html.append("<div class='form-group'><label>Student ID <span class='req'>(required)</span></label><input type='text' id='studentIdInput' name='id' placeholder='e.g. STU105' required></div>");
+        html.append("<div class='form-group'><label>Full Name</label><input type='text' name='name' placeholder='Full Name' required></div>");
+        html.append("</div>");
+
+        html.append("<div class='form-row'>");
+        html.append("<div class='form-group'><label>Contact Number</label><input type='text' name='phone' placeholder='10-digit number' pattern='\\d{10}' required></div>");
+        html.append("<div class='form-group'><label>Email Address</label><input type='email' name='email' placeholder='name@university.edu' required></div>");
+        html.append("</div>");
+
+        html.append("<div class='form-row'>");
+        html.append("<div class='form-group'><label>Passenger Type</label><select name='type'><option value='STUDENT'>STUDENT (20% Subsidy)</option><option value='FACULTY'>FACULTY (10% Subsidy)</option></select></div>");
+        html.append("<div class='form-group'><label>Course / Dept</label><select name='dept'><option>B.Tech CSE</option><option>B.Tech ECE</option><option>B.Tech Mech</option><option>MBA</option><option>Faculty Staff</option></select></div>");
+        html.append("</div>");
+
+        html.append("<div class='form-row'>");
+        html.append("<div class='form-group'><label>Route</label><select name='route'>");
         for (BusRoute r : routes) {
             if (r.isAvailable()) {
                 html.append("<option value='").append(r.getRouteNumber()).append("'>").append(r.getRouteNumber())
-                    .append(" - ").append(r.getSource()).append(" (Fare: Rs. ").append(r.getFare()).append(")</option>");
+                    .append(" - ").append(r.getSource()).append("</option>");
             }
         }
         html.append("</select></div>");
-        html.append("<div class='form-group'><label>Pass Duration:</label><select name='passType'><option value='MONTHLY'>MONTHLY (30 Days - Subsidy Applied)</option><option value='SEMESTER'>SEMESTER (180 Days - Subsidy Applied)</option></select></div>");
-        html.append("<button type='submit'>Issue Pass & Compute Fee</button>");
-        html.append("</form>");
+        html.append("<div class='form-group'><label>Pass Type (Dropdown)</label><select name='passType'><option value='MONTHLY'>Monthly (30 Days)</option><option value='SEMESTER'>Semester (180 Days)</option></select></div>");
         html.append("</div>");
 
-        // Form 2: Register Passenger
+        html.append("<div class='form-group'><label>Address / Local Stoppage</label><input type='text' name='address' placeholder='Enter pickup location or address'></div>");
+        html.append("<div style='margin-top:auto; padding-top:8px;'><button type='submit' class='btn-teal' style='width:100%;'>Register Passenger</button></div>");
+        html.append("</form>");
+        html.append("</div></div>");
+
+        // CARD 2: ROUTE CATALOG (Top-Right)
         html.append("<div class='card'>");
-        html.append("<h2>Register New Passenger</h2>");
-        html.append("<form method='POST' action='/api/register-passenger'>");
-        html.append("<div style='display:grid;grid-template-columns:1fr 1fr;gap:10px;'>");
-        html.append("<div class='form-group'><label>ID:</label><input type='text' name='id' placeholder='STU104 / FAC203' required></div>");
-        html.append("<div class='form-group'><label>Type:</label><select name='type'><option value='STUDENT'>STUDENT (20% Subsidy)</option><option value='FACULTY'>FACULTY (10% Subsidy)</option></select></div>");
+        html.append("<div class='card-header teal'>");
+        html.append("<div class='card-title'>ROUTE CATALOG</div>");
+        html.append("<button type='button' class='card-btn' onclick='showNewRouteModal()'>+ New Route</button>");
         html.append("</div>");
-        html.append("<div class='form-group'><label>Full Name:</label><input type='text' name='name' required></div>");
-        html.append("<div style='display:grid;grid-template-columns:1fr 1fr;gap:10px;'>");
-        html.append("<div class='form-group'><label>Phone (10 Digits):</label><input type='text' name='phone' pattern='\\d{10}' required></div>");
-        html.append("<div class='form-group'><label>Email ID:</label><input type='email' name='email' required></div>");
-        html.append("</div>");
-        html.append("<button type='submit' style='background:#27ae60;'>Register Passenger</button>");
-        html.append("</form>");
-        html.append("</div>");
-
-        html.append("</div>"); // end grid-2
-
-        // Table 1: Bus Passes
-        html.append("<div class='card' style='margin-bottom:25px;'>");
-        html.append("<h2>Issued Bus Passes</h2>");
-        html.append("<table><thead><tr><th>Pass ID</th><th>Passenger</th><th>Route</th><th>Type</th><th>Fee</th><th>Issued</th><th>Expires</th><th>Status</th></tr></thead><tbody>");
-        for (BusPass p : passes) {
-            String badgeClass = "badge-active";
-            if ("EXPIRED".equalsIgnoreCase(p.getStatus()) || p.isExpired()) badgeClass = "badge-expired";
-            if ("CANCELLED".equalsIgnoreCase(p.getStatus())) badgeClass = "badge-cancelled";
-            html.append("<tr>");
-            html.append("<td><strong>").append(p.getPassId()).append("</strong></td>");
-            html.append("<td>").append(p.getPassengerId()).append("</td>");
-            html.append("<td>").append(p.getRouteNumber()).append("</td>");
-            html.append("<td>").append(p.getPassType()).append("</td>");
-            html.append("<td>Rs. ").append(String.format("%.2f", p.getFee())).append("</td>");
-            html.append("<td>").append(p.getIssueDate()).append("</td>");
-            html.append("<td>").append(p.getExpiryDate()).append("</td>");
-            html.append("<td><span class='badge ").append(badgeClass).append("'>").append(p.getStatus()).append("</span></td>");
-            html.append("</tr>");
-        }
-        html.append("</tbody></table>");
-        html.append("</div>");
-
-        // Table 2: Bus Routes
-        html.append("<div class='card' style='margin-bottom:25px;'>");
-        html.append("<h2>Bus Route Network Catalog</h2>");
-        html.append("<table><thead><tr><th>Route #</th><th>Origin</th><th>Destination</th><th>Boarding Landmark</th><th>Fare</th><th>Status</th></tr></thead><tbody>");
+        html.append("<div class='card-body'>");
+        html.append("<div class='table-wrap' id='routeTable'>");
+        html.append("<table><thead><tr><th>Route ID</th><th>Origin</th><th>Destination</th><th>Stoppages</th><th>Fare</th><th>Status</th></tr></thead><tbody>");
         for (BusRoute r : routes) {
             html.append("<tr>");
             html.append("<td><strong>").append(r.getRouteNumber()).append("</strong></td>");
             html.append("<td>").append(r.getSource()).append("</td>");
             html.append("<td>").append(r.getDestination()).append("</td>");
             html.append("<td>").append(r.getBoardingPoint()).append("</td>");
-            html.append("<td>Rs. ").append(String.format("%.2f", r.getFare())).append("</td>");
-            html.append("<td>").append(r.isAvailable() ? "<span class='badge badge-active'>ACTIVE</span>" : "<span class='badge badge-expired'>SUSPENDED</span>").append("</td>");
+            html.append("<td>Rs. ").append(String.format("%.1f", r.getFare())).append("</td>");
+            html.append("<td>").append(r.isAvailable() ? "<span class='badge badge-active'>Active</span>" : "<span class='badge badge-inactive'>Inactive</span>").append("</td>");
             html.append("</tr>");
         }
         html.append("</tbody></table>");
+        html.append("</div></div></div>");
+
+        // CARD 3: PASS FEE CALCULATION (Bottom-Left)
+        html.append("<div class='card'>");
+        html.append("<div class='card-header'>");
+        html.append("<div class='card-title'>PASS FEE CALCULATION</div>");
+        html.append("</div>");
+        html.append("<div class='card-body'>");
+        html.append("<form method='POST' action='/api/issue-pass'>");
+        html.append("<div class='form-row'>");
+        html.append("<div class='form-group'><label>Select Route</label><select id='calcRoute' name='routeNumber' onchange='computePreviewFee()'>");
+        for (BusRoute r : routes) {
+            if (r.isAvailable()) {
+                html.append("<option value='").append(r.getRouteNumber()).append("' data-fare='").append(r.getFare()).append("'>")
+                    .append(r.getRouteNumber()).append(" (Base Rs. ").append(r.getFare()).append(")</option>");
+            }
+        }
+        html.append("</select></div>");
+        html.append("<div class='form-group'><label>Pass Type</label><select id='calcPassType' name='passType' onchange='computePreviewFee()'><option value='MONTHLY'>Monthly</option><option value='SEMESTER'>Semester</option></select></div>");
         html.append("</div>");
 
-        html.append("</div></body></html>");
+        html.append("<div class='form-row'>");
+        html.append("<div class='form-group'><label>Passenger ID</label><input type='text' id='calcPassengerId' name='passengerId' placeholder='e.g. STU101' required></div>");
+        html.append("<div class='form-group'><label>Student/Passenger Type</label><select id='calcUserType' onchange='computePreviewFee()'><option value='STUDENT'>Regular (Student)</option><option value='FACULTY'>Faculty Member</option></select></div>");
+        html.append("</div>");
+
+        html.append("<div style='background:#f8fafc; border:1px dashed #cbd5e1; border-radius:6px; padding:10px 14px; margin:8px 0; display:flex; align-items:center; justify-content:space-between;'>");
+        html.append("<div><span style='font-size:11px; color:#64748b; font-weight:600;'>Calculated Fee:</span><div id='feeDisplay' style='font-size:20px; font-weight:700; color:#0f172a; margin-top:2px;'>Rs. 440.00</div></div>");
+        html.append("<button type='submit' class='btn-teal'>Calculate & Issue</button>");
+        html.append("</div>");
+        html.append("</form>");
+        html.append("</div></div>");
+
+        // CARD 4: VALIDITY MONITOR (Bottom-Right)
+        html.append("<div class='card'>");
+        html.append("<div class='card-header teal'>");
+        html.append("<div class='card-title'>VALIDITY MONITOR</div>");
+        html.append("</div>");
+        html.append("<div class='card-body'>");
+        html.append("<div class='monitor-strip'>");
+        html.append("<span>Active Passes: <strong>").append(activePassesCount).append("</strong></span>");
+        html.append("<span>Expiring Soon: <strong>").append(expiringCount).append("</strong> (Today/7d)</span>");
+        html.append("<span>Passes Issued: <strong>").append(passes.size()).append("</strong></span>");
+        html.append("</div>");
+
+        html.append("<div class='table-wrap' id='validityTable'>");
+        html.append("<table><thead><tr><th>Student Name / ID</th><th>Pass ID</th><th>Expiry Date</th><th>Status</th><th>Actions</th></tr></thead><tbody>");
+        for (BusPass p : passes) {
+            String badgeClass = "badge-active";
+            String statusText = "Active";
+            if (p.isExpired() || "EXPIRED".equalsIgnoreCase(p.getStatus())) {
+                badgeClass = "badge-inactive";
+                statusText = "Inactive";
+            }
+            if ("CANCELLED".equalsIgnoreCase(p.getStatus())) {
+                badgeClass = "badge-inactive";
+                statusText = "Inactive";
+            }
+            html.append("<tr>");
+            html.append("<td><strong>").append(p.getPassengerId()).append("</strong></td>");
+            html.append("<td>").append(p.getPassId()).append("</td>");
+            html.append("<td>").append(p.getExpiryDate()).append("</td>");
+            html.append("<td><span class='badge ").append(badgeClass).append("'>").append(statusText).append("</span></td>");
+            html.append("<td><form method='POST' action='/api/renew-pass' style='display:inline;'><input type='hidden' name='passId' value='").append(p.getPassId()).append("'><input type='hidden' name='passType' value='").append(p.getPassType()).append("'><button type='submit' style='background:#0284c7; color:white; border:none; padding:3px 7px; border-radius:3px; font-size:10px; cursor:pointer;'>Renew</button></form></td>");
+            html.append("</tr>");
+        }
+        html.append("</tbody></table>");
+        html.append("</div></div></div>");
+
+        html.append("</div>"); // end dashboard-grid
+
+        html.append("</div>"); // end main-content
+        html.append("</div>"); // end app-body
+        html.append("</div>"); // end app-window
+
+        // Modal for New Route
+        html.append("<div id='newRouteModal' style='display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:999; align-items:center; justify-content:center;'>");
+        html.append("<div style='background:white; border-radius:8px; padding:24px; width:380px; box-shadow:0 20px 25px -5px rgba(0,0,0,0.5);'>");
+        html.append("<h3 style='margin:0 0 14px 0; font-size:15px; color:#0f172a;'>Add New Bus Route</h3>");
+        html.append("<form method='POST' action='/api/add-route'>");
+        html.append("<div class='form-group'><label>Route Number</label><input type='text' name='routeNumber' placeholder='e.g. R-106' required></div>");
+        html.append("<div class='form-group'><label>Origin / Source</label><input type='text' name='source' placeholder='e.g. South Extension' required></div>");
+        html.append("<div class='form-group'><label>Destination</label><input type='text' name='destination' value='College Campus' required></div>");
+        html.append("<div class='form-group'><label>Boarding Landmark</label><input type='text' name='boardingPoint' placeholder='e.g. Ring Road Stop' required></div>");
+        html.append("<div class='form-group'><label>Base Fare (Rs)</label><input type='number' step='0.5' name='fare' value='30' required></div>");
+        html.append("<div style='display:flex; justify-content:flex-end; gap:8px; margin-top:16px;'>");
+        html.append("<button type='button' onclick='hideNewRouteModal()' style='background:#e2e8f0; color:#334155; border:none; padding:8px 12px; border-radius:4px; font-size:12px; font-weight:600; cursor:pointer;'>Cancel</button>");
+        html.append("<button type='submit' class='btn-teal'>Save Route</button>");
+        html.append("</div></form></div></div>");
+
+        // Interactive Fee Script
+        html.append("<script>");
+        html.append("function showNewRouteModal() { document.getElementById('newRouteModal').style.display = 'flex'; }");
+        html.append("function hideNewRouteModal() { document.getElementById('newRouteModal').style.display = 'none'; }");
+        html.append("function computePreviewFee() {");
+        html.append("  var sel = document.getElementById('calcRoute');");
+        html.append("  var opt = sel.options[sel.selectedIndex];");
+        html.append("  var fare = opt ? parseFloat(opt.getAttribute('data-fare') || '30') : 30;");
+        html.append("  var type = document.getElementById('calcPassType').value;");
+        html.append("  var userType = document.getElementById('calcUserType').value;");
+        html.append("  var nominal = (type === 'SEMESTER') ? (fare * 90) : (fare * 22);");
+        html.append("  var discount = (userType === 'STUDENT') ? 0.20 : 0.10;");
+        html.append("  var total = nominal * (1 - discount);");
+        html.append("  document.getElementById('feeDisplay').innerText = 'Rs. ' + total.toFixed(2);");
+        html.append("}");
+        html.append("window.onload = computePreviewFee;");
+        html.append("</script>");
+
+        html.append("</body></html>");
         return html.toString();
     }
 }
