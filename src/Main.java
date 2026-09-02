@@ -1,5 +1,6 @@
-import gui.MainFrame;
+import gui.LoginFrame;
 import monitor.PassValidityMonitor;
+import service.AuthService;
 import service.BusPassService;
 import service.PassengerService;
 import service.RouteService;
@@ -13,11 +14,11 @@ import java.awt.GraphicsEnvironment;
  * Application Entry Point.
  * 
  * Workflow:
- * 1. Checks and initializes SQLite database schema and sample data.
- * 2. Initializes Service layer dependencies.
- * 3. Starts Localhost Web Server on http://localhost:8080
+ * 1. Checks and initializes SQLite database schema (including USERS) and sample data.
+ * 2. Initializes Service layer dependencies (AuthService, PassengerService, RouteService, BusPassService).
+ * 3. Starts Localhost Web Server on http://localhost:8080 (with Login / Register support).
  * 4. Spawns asynchronous PassValidityMonitor background thread.
- * 5. Launches Java AWT GUI on Event Dispatch Thread (if not headless).
+ * 5. Launches Java AWT Login Window on Event Dispatch Thread (if not headless).
  */
 public class Main {
     public static void main(String[] args) {
@@ -33,15 +34,16 @@ public class Main {
         }
 
         // Step 2: Initialize Services
+        AuthService authService = new AuthService();
         PassengerService passengerService = new PassengerService();
         RouteService routeService = new RouteService();
         BusPassService passService = new BusPassService();
 
         // Step 3: Start Localhost Web Server on Port 8080
         try {
-            WebServer webServer = new WebServer(passengerService, routeService, passService);
+            WebServer webServer = new WebServer(authService, passengerService, routeService, passService);
             webServer.start(8080);
-            System.out.println(" Web Portal running at: http://localhost:8080");
+            System.out.println(" Web Portal running at: http://localhost:8080 (Login / Register enabled)");
         } catch (Exception e) {
             System.err.println("Web Server warning: " + e.getMessage());
         }
@@ -50,19 +52,19 @@ public class Main {
         PassValidityMonitor monitor = new PassValidityMonitor(passService, 15000);
         monitor.start();
 
-        // Step 5: Launch AWT Desktop GUI (if display environment available)
+        // Step 5: Launch AWT Login Window (if display environment available)
         if (!GraphicsEnvironment.isHeadless()) {
             EventQueue.invokeLater(() -> {
                 try {
-                    MainFrame frame = new MainFrame(passengerService, routeService, passService, monitor);
-                    frame.setVisible(true);
-                    System.out.println("Desktop AWT GUI successfully launched.");
+                    LoginFrame loginFrame = new LoginFrame(authService, passengerService, routeService, passService, monitor);
+                    loginFrame.setVisible(true);
+                    System.out.println("Desktop AWT Login Window successfully launched.");
                 } catch (Exception e) {
                     System.err.println("GUI Launch Error: " + e.getMessage());
                 }
             });
         } else {
-            System.out.println("Running in headless environment. Web server active on http://localhost:8080");
+            System.out.println("Running in headless mode. Web Portal accessible at: http://localhost:8080/login");
         }
     }
 }

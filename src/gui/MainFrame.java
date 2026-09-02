@@ -1,5 +1,6 @@
 package gui;
 
+import model.User;
 import monitor.PassValidityMonitor;
 import service.BusPassService;
 import service.PassengerService;
@@ -13,14 +14,15 @@ import java.awt.event.WindowEvent;
 
 /**
  * Main Application Window for Bus Pass Management System.
- * Built with Java AWT (Frame, CardLayout, BorderLayout, FlowLayout).
- * Hosts dashboard navigation and module panels.
+ * Displays logged-in user profile, role badge, and logout control.
  */
 public class MainFrame extends Frame implements ActionListener {
     private final PassengerService passengerService;
     private final RouteService routeService;
     private final BusPassService passService;
     private final PassValidityMonitor monitor;
+    private final User currentUser;
+    private final LoginFrame parentLoginFrame;
 
     // CardLayout container
     private Panel pnlCardContainer;
@@ -34,16 +36,19 @@ public class MainFrame extends Frame implements ActionListener {
     private ExpiryPanel expiryPanel;
 
     // Navigation buttons
-    private Button btnNavPassengers, btnNavRoutes, btnNavPasses, btnNavSearch, btnNavExpiry, btnNavExit;
+    private Button btnNavPassengers, btnNavRoutes, btnNavPasses, btnNavSearch, btnNavExpiry, btnLogout;
     private Label lblSystemStatus;
 
     public MainFrame(PassengerService passengerService, RouteService routeService, 
-                     BusPassService passService, PassValidityMonitor monitor) {
-        super("Bus Pass Management System - College Transport Administration");
+                     BusPassService passService, PassValidityMonitor monitor, 
+                     User currentUser, LoginFrame parentLoginFrame) {
+        super("Bus Pass Management System - Logged in as " + (currentUser != null ? currentUser.getFullName() : "Admin"));
         this.passengerService = passengerService;
         this.routeService = routeService;
         this.passService = passService;
         this.monitor = monitor;
+        this.currentUser = currentUser;
+        this.parentLoginFrame = parentLoginFrame;
 
         initUI();
         initWindowEvents();
@@ -58,17 +63,32 @@ public class MainFrame extends Frame implements ActionListener {
         // --- Top Header Bar ---
         Panel pnlTop = new Panel(new BorderLayout());
         pnlTop.setBackground(new Color(24, 43, 94));
-        pnlTop.setPreferredSize(new Dimension(1080, 60));
+        pnlTop.setPreferredSize(new Dimension(1080, 62));
 
-        Label lblAppName = new Label("  COLLEGE BUS PASS MANAGEMENT SYSTEM (AWT)");
-        lblAppName.setFont(new Font("SansSerif", Font.BOLD, 18));
+        Label lblAppName = new Label("  COLLEGE BUS PASS MANAGEMENT SYSTEM");
+        lblAppName.setFont(new Font("SansSerif", Font.BOLD, 17));
         lblAppName.setForeground(Color.WHITE);
         pnlTop.add(lblAppName, BorderLayout.WEST);
 
-        Label lblSub = new Label("Transport Department | Java Desktop Edition  ");
-        lblSub.setFont(new Font("SansSerif", Font.PLAIN, 12));
-        lblSub.setForeground(new Color(200, 215, 245));
-        pnlTop.add(lblSub, BorderLayout.EAST);
+        // User Profile Pill in Header
+        Panel pnlUserBadge = new Panel(new FlowLayout(FlowLayout.RIGHT, 15, 16));
+        pnlUserBadge.setBackground(new Color(24, 43, 94));
+
+        String userDisplay = (currentUser != null) ? 
+                ("User: " + currentUser.getFullName() + " (" + currentUser.getRole() + ")") : "Role: ADMINISTRATOR";
+        Label lblUser = new Label(userDisplay);
+        lblUser.setFont(new Font("SansSerif", Font.BOLD, 12));
+        lblUser.setForeground(new Color(255, 215, 0)); // Gold text
+
+        btnLogout = new Button("Sign Out");
+        btnLogout.setBackground(new Color(178, 34, 34));
+        btnLogout.setForeground(Color.WHITE);
+        btnLogout.setFont(new Font("SansSerif", Font.BOLD, 11));
+        btnLogout.addActionListener(this);
+
+        pnlUserBadge.add(lblUser);
+        pnlUserBadge.add(btnLogout);
+        pnlTop.add(pnlUserBadge, BorderLayout.EAST);
 
         add(pnlTop, BorderLayout.NORTH);
 
@@ -87,9 +107,6 @@ public class MainFrame extends Frame implements ActionListener {
         btnNavPasses = createNavButton("3. Issue / Renew Pass");
         btnNavSearch = createNavButton("4. Search Routes");
         btnNavExpiry = createNavButton("5. Expiry Monitor");
-        btnNavExit = createNavButton("6. Exit System");
-        btnNavExit.setBackground(new Color(160, 40, 40));
-        btnNavExit.setForeground(Color.WHITE);
 
         pnlSidebar.add(btnNavPassengers);
         pnlSidebar.add(btnNavRoutes);
@@ -97,7 +114,7 @@ public class MainFrame extends Frame implements ActionListener {
         pnlSidebar.add(btnNavSearch);
         pnlSidebar.add(btnNavExpiry);
         pnlSidebar.add(new Label("")); // Spacer
-        pnlSidebar.add(btnNavExit);
+        pnlSidebar.add(new Label("")); // Spacer
 
         add(pnlSidebar, BorderLayout.WEST);
 
@@ -124,7 +141,7 @@ public class MainFrame extends Frame implements ActionListener {
         pnlBottom.setBackground(new Color(220, 225, 235));
         pnlBottom.setPreferredSize(new Dimension(1080, 28));
 
-        lblSystemStatus = new Label(" System Status: Ready | Connected to SQLite Database (buspass.db)");
+        lblSystemStatus = new Label(" Status: Authenticated | Connected to SQLite Database (buspass.db) | Web Server on http://localhost:8080");
         lblSystemStatus.setFont(new Font("SansSerif", Font.PLAIN, 11));
         pnlBottom.add(lblSystemStatus, BorderLayout.WEST);
 
@@ -135,7 +152,6 @@ public class MainFrame extends Frame implements ActionListener {
 
         add(pnlBottom, BorderLayout.SOUTH);
 
-        // Connect background monitor alert listener to GUI
         if (monitor != null) {
             monitor.setAlertListener((expiredCount, soonCount) -> {
                 expiryPanel.updateStatusCounts(expiredCount, soonCount);
@@ -153,7 +169,6 @@ public class MainFrame extends Frame implements ActionListener {
     }
 
     private void initWindowEvents() {
-        // Window closing adapter
         addWindowListener(new WindowAdapter() {
             @Override
             public void windowClosing(WindowEvent e) {
@@ -179,8 +194,15 @@ public class MainFrame extends Frame implements ActionListener {
         } else if (src == btnNavExpiry) {
             cardLayout.show(pnlCardContainer, "EXPIRY");
             expiryPanel.loadPassStatusData();
-        } else if (src == btnNavExit) {
-            exitApplication();
+        } else if (src == btnLogout) {
+            handleLogout();
+        }
+    }
+
+    private void handleLogout() {
+        dispose();
+        if (parentLoginFrame != null) {
+            parentLoginFrame.setVisible(true);
         }
     }
 
@@ -189,7 +211,6 @@ public class MainFrame extends Frame implements ActionListener {
             monitor.stopMonitoring();
         }
         dispose();
-        System.out.println("Application closed cleanly.");
         System.exit(0);
     }
 }
